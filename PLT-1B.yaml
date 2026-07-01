@@ -73,6 +73,14 @@ one_wire:
   - platform: gpio
     pin: GPIO5
 
+output:
+  - platform: ledc
+    pin: GPIO10
+    id: buzzer
+
+rtttl:
+  output: buzzer
+
 number:
   - platform: template
     name: Air Temperature Offset
