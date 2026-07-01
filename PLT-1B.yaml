@@ -1,0 +1,292 @@
+# Synced at upstream commit e8820f7525aa9689e94ce9f601ad42ee23040409
+
+substitutions:
+  name: apollo-plt-1b
+  version: "26.3.2.1-padhi"
+  device_description: "${name} made by Apollo Automation. Firmware: ${version}."
+
+external_components:
+  - source: github://ApolloAutomation/esphome-battery-component
+    components: [max17048]
+
+esp32:
+  variant: esp32c3
+  flash_size: 4MB
+  framework:
+    type: esp-idf
+    advanced:
+       assertion_level: SILENT
+       enable_lwip_assert: false
+
+deep_sleep:
+  id: deep_sleep_1
+  sleep_duration: 12h
+  run_duration: 90s
+
+api:
+  on_client_connected:
+    - delay: 15s
+    - if:
+        condition:
+          or:
+            - binary_sensor.is_on: ota_mode
+            - switch.is_on: prevent_sleep
+        then:
+          - lambda: |- 
+              ESP_LOGW("Apollo", "Preventing Deep Sleep Due To OTA Or Switch");
+              id(deep_sleep_1).prevent_deep_sleep(); 
+        else:
+          - delay: 10s
+          - lambda: |-
+              id(reportAllValues).execute();
+          - delay: 5s
+          - deep_sleep.enter:
+              id: deep_sleep_1
+  reboot_timeout: 0s
+
+i2c:
+  sda: GPIO1
+  scl: GPIO0
+  id: bus_a
+  frequency: 200kHz
+
+one_wire:
+  - platform: gpio
+    pin: GPIO5
+
+number:
+  - platform: template
+    name: Air Temperature Offset
+    id: aht_temperature_offset
+    restore_value: true
+    initial_value: 0.0
+    min_value: -70.0
+    max_value: 70.0
+    entity_category: "CONFIG"
+    unit_of_measurement: "°C"
+    optimistic: true
+    update_interval: never
+    step: 0.1
+    mode: box
+  - platform: template
+    name: Air Humidity Offset
+    id: aht_humidity_offset
+    restore_value: true
+    initial_value: 0
+    min_value: -70.0
+    max_value: 70.0
+    entity_category: "CONFIG"
+    unit_of_measurement: "%"
+    optimistic: true
+    update_interval: never
+    step: 0.1
+    mode: box
+  - platform: template
+    id: wet_voltage
+    name: 100% Water Voltage
+    initial_value: '1.55'
+    optimistic: true
+    update_interval: never
+    step: 0.01
+    mode: box
+    restore_value: true
+    entity_category: "CONFIG"
+    min_value: 0.0
+    max_value: 5.0
+  - platform: template
+    id: dry_voltage
+    name: Dry Voltage
+    initial_value: '2.7'
+    restore_value: true
+    entity_category: "CONFIG"
+    optimistic: true
+    update_interval: never
+    step: 0.01
+    mode: box
+    min_value: 0.0
+    max_value: 5.0
+  - platform: template
+    name: LTR390 Update Interval
+    id: ltr390_update_interval
+    restore_value: true
+    initial_value: 60
+    min_value: 1
+    max_value: 300
+    entity_category: "CONFIG"
+    unit_of_measurement: "s"
+    optimistic: true
+    update_interval: never
+    step: 1
+    mode: box
+  - platform: template
+    name: "Sleep Duration"
+    id: deep_sleep_sleep_duration
+    min_value: 0
+    max_value: 800
+    step: 0.01
+    mode: box
+    update_interval: never
+    optimistic: true
+    restore_value: true
+    initial_value: 12
+    icon: "mdi:arrow-collapse-right"
+    entity_category: CONFIG
+    unit_of_measurement: "h"
+    on_value:
+      then:
+        - lambda: |-
+            id(deep_sleep_1).set_sleep_duration(x * 60 * 60 * 1000);
+
+binary_sensor:
+  - platform: homeassistant
+    name: "OTA Mode"
+    id: ota_mode
+    entity_id: input_boolean.apollo_ota_mode
+    on_press:
+      then:
+        - lambda: |- 
+            id(deep_sleep_1).prevent_deep_sleep();
+    on_release:  
+      then:
+        - if:
+            condition:
+              switch.is_off: prevent_sleep
+            then:
+              - lambda: |- 
+                  id(deep_sleep_1).allow_deep_sleep();
+
+sensor:
+  - platform: dallas_temp
+    name: "Soil Temperature"
+    update_interval: 60s
+    device_class: temperature
+    id: soil_temperature
+    icon: mdi:thermometer
+    filters:
+      - lambda: |-
+          if (isnan(x)) { return NAN; }
+          if (x == 85.0) { return NAN; }
+          return x;
+  - platform: aht10
+    id: aht_20
+    variant: AHT20
+    temperature:
+      name: "Air Temperature"
+      id: aht_temperature
+      filters:
+        - lambda: return x - id(aht_temperature_offset).state;
+    humidity:
+      name: "Air Humidity"
+      id: aht_humidity
+      filters:
+        - lambda: return x - id(aht_humidity_offset).state;
+    update_interval: 60s
+    setup_priority: -100 # LATE
+  - platform: adc
+    pin: GPIO4
+    id: soil_adc
+    attenuation: auto
+    name: "Soil ADC"
+    update_interval: 5s
+    accuracy_decimals: 2
+    entity_category: diagnostic
+    disabled_by_default: true
+  - platform: template
+    name: Soil Moisture
+    update_interval: 60s
+    id: soil_moisture
+    unit_of_measurement: "%"
+    device_class: moisture
+    state_class: measurement
+    icon: mdi:water
+    lambda: |-
+      float high = id(wet_voltage).state;
+      float low = id(dry_voltage).state;
+      float x = id(soil_adc).state;
+      float calibrated_value = ((x - low)/(high - low)) * 100;
+      if (calibrated_value < 0) return 0;
+      else if (calibrated_value > 100) return 100;
+      else return calibrated_value;
+    accuracy_decimals: 0
+  - platform: ltr390
+    id: ltr_390
+    update_interval: 60s
+    light:
+      name: "LTR390 Light"
+      id: ltr390light
+    uv_index:
+      name: "LTR390 UV Index"
+      id: ltr390uvindex
+  - platform: max17048
+    id: max_17048
+    battery_voltage:
+      name: Battery voltage
+      id: batt_v
+    battery_level:
+      name: Battery level
+      id: batt_pct
+      filters:
+        - lambda: |
+            if (x > 100) return 100;
+            else return (x);
+
+light:
+  - platform: esp32_rmt_led_strip
+    id: rgb_light
+    name: "RGB Light"
+    pin: GPIO3
+    default_transition_length: 0s
+    chipset: WS2812
+    num_leds: 1
+    rgb_order: grb
+    effects:
+      - pulse:
+          name: "Slow Pulse"
+          transition_length: 250ms
+          update_interval: 250ms
+          min_brightness: 50%
+          max_brightness: 100%
+      - pulse:
+          name: "Fast Pulse"
+          transition_length: 100ms
+          update_interval: 100ms
+          min_brightness: 50%
+          max_brightness: 100%
+
+switch:
+  - platform: template
+    name: "Prevent Sleep"
+    id: prevent_sleep
+    icon: mdi:sleep
+    restore_mode: RESTORE_DEFAULT_ON
+    optimistic: true
+    entity_category: "config"
+    on_turn_on:
+      then:
+        - lambda: |- 
+            id(deep_sleep_1).prevent_deep_sleep();
+    on_turn_off:
+      then:
+        - if:
+            condition:
+              binary_sensor.is_off: ota_mode
+            then:
+              - lambda: |- 
+                  id(deep_sleep_1).allow_deep_sleep();
+  - platform: gpio
+    pin: GPIO7
+    name: "Accessory Power"
+    id: accessory_power
+    restore_mode: ALWAYS_ON
+    setup_priority: 5000
+    entity_category: CONFIG
+
+script:
+  - id: reportAllValues
+    then:
+      - component.update: soil_temperature
+      - component.update: soil_moisture
+      - component.update: aht_20
+      - component.update: ltr_390
+      - component.update: soil_adc
+      - component.update: max_17048
